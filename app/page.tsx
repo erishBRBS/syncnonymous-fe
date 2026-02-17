@@ -23,7 +23,7 @@ interface AppState {
   displayName: string;
   token: string;
   guestId: string; // numeric string (Guest.id)
-  roomId: string;  // room public_id (uuid)
+  roomId: string; // room public_id (uuid)
   partnerName: string;
   partnerLeft: boolean;
 }
@@ -79,6 +79,7 @@ export default function ChatApp() {
           setState((prev) => ({
             ...prev,
             roomId,
+            partnerName: (hb as any).partner_name ?? "Anonymous",
             partnerLeft: false,
             phase: "chatting",
           }));
@@ -135,6 +136,7 @@ export default function ChatApp() {
           (q as any).room?.public_id ??
           (q as any).room_public_id ??
           (q as any).room_id;
+        const partnerNameFromApi = (q as any).partner_name;
 
         if (!roomId) {
           // matched but missing room id → treat as error
@@ -145,6 +147,7 @@ export default function ChatApp() {
         setState((prev) => ({
           ...prev,
           roomId,
+          partnerName: partnerNameFromApi ?? "Anonymous",
           partnerLeft: false,
           phase: "chatting",
         }));
@@ -155,7 +158,9 @@ export default function ChatApp() {
       // If waiting, heartbeat effect above will handle advancing to chatting
     } catch (err) {
       toast.error(
-        err instanceof Error ? err.message : "Failed to connect. Please try again."
+        err instanceof Error
+          ? err.message
+          : "Failed to connect. Please try again.",
       );
       cleanup();
       setState(initialState);
@@ -202,7 +207,9 @@ export default function ChatApp() {
         // ignore own messages
         if (msg.sender_guest_id === Number(state.guestId)) return;
 
-        window.dispatchEvent(new CustomEvent("chat-new-message", { detail: msg }));
+        window.dispatchEvent(
+          new CustomEvent("chat-new-message", { detail: msg }),
+        );
       })
       .listen(".room.closed", () => {
         setState((prev) => ({ ...prev, partnerLeft: true, phase: "ended" }));
@@ -234,16 +241,17 @@ export default function ChatApp() {
         <WaitingRoom displayName={state.displayName} onCancel={handleCancel} />
       )}
 
-      {(state.phase === "chatting" || state.phase === "ended") && state.roomId && (
-        <ChatRoom
-          token={state.token}
-          roomId={state.roomId}
-          myGuestId={state.guestId}
-          partnerName={state.partnerName}
-          onStop={handleStop}
-          partnerLeft={state.partnerLeft}
-        />
-      )}
+      {(state.phase === "chatting" || state.phase === "ended") &&
+        state.roomId && (
+          <ChatRoom
+            token={state.token}
+            roomId={state.roomId}
+            myGuestId={state.guestId}
+            partnerName={state.partnerName}
+            onStop={handleStop}
+            partnerLeft={state.partnerLeft}
+          />
+        )}
     </main>
   );
 }

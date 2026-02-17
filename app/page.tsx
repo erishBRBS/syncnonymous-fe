@@ -1,65 +1,249 @@
-import Image from "next/image";
+"use client";
 
-export default function Home() {
+import { useCallback, useEffect, useRef, useState } from "react";
+import { toast } from "sonner";
+// import { ThemeToggle } from "@/components/ui/theme-toggle";
+import { NameEntry } from "@/components/chat/name-entry";
+import { WaitingRoom } from "@/components/chat/waiting-room";
+import { ChatRoom } from "@/components/chat/chat-room";
+import {
+  createSession,
+  joinQueue,
+  heartbeat,
+  leaveRoom,
+  type Message,
+} from "@/lib/api";
+import { createEchoInstance } from "@/lib/echo";
+import type Echo from "laravel-echo";
+
+type Phase = "name-entry" | "waiting" | "chatting" | "ended";
+
+interface AppState {
+  phase: Phase;
+  displayName: string;
+  token: string;
+  guestId: string; // numeric string (Guest.id)
+  roomId: string;  // room public_id (uuid)
+  partnerName: string;
+  partnerLeft: boolean;
+}
+
+const initialState: AppState = {
+  phase: "name-entry",
+  displayName: "",
+  token: "",
+  guestId: "",
+  roomId: "",
+  partnerName: "",
+  partnerLeft: false,
+};
+
+export default function ChatApp() {
+  const [state, setState] = useState<AppState>(initialState);
+  const [isLoading, setIsLoading] = useState(false);
+
+  const echoRef = useRef<Echo<"pusher"> | null>(null);
+  const heartbeatRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const stopHeartbeat = useCallback(() => {
+    if (heartbeatRef.current) {
+      clearInterval(heartbeatRef.current);
+      heartbeatRef.current = null;
+    }
+  }, []);
+
+  const cleanup = useCallback(() => {
+    stopHeartbeat();
+    if (echoRef.current) {
+      echoRef.current.disconnect();
+      echoRef.current = null;
+    }
+  }, [stopHeartbeat]);
+
+  // ✅ Start heartbeat polling only while WAITING
+  useEffect(() => {
+    if (state.phase !== "waiting" || !state.token) return;
+
+    let cancelled = false;
+
+    const check = async () => {
+      try {
+        const hb = await heartbeat(state.token);
+
+        if (cancelled) return;
+
+        // expected: { status: "matched", room_public_id: "uuid" }
+        if ((hb as any).status === "matched" && (hb as any).room_public_id) {
+          const roomId = (hb as any).room_public_id as string;
+
+          setState((prev) => ({
+            ...prev,
+            roomId,
+            partnerLeft: false,
+            phase: "chatting",
+          }));
+
+          stopHeartbeat();
+        }
+      } catch {
+        // ignore polling errors
+      }
+    };
+
+    // run immediately then interval
+    check();
+    heartbeatRef.current = setInterval(check, 1500);
+
+    return () => {
+      cancelled = true;
+      stopHeartbeat();
+    };
+  }, [state.phase, state.token, stopHeartbeat]);
+
+  // ✅ Handle name submit
+  const handleNameSubmit = async (displayName: string) => {
+    setIsLoading(true);
+
+    try {
+      // 1) Create session
+      const session = await createSession(displayName);
+      const token = session.token;
+      const guestId = String(session.guest.id);
+
+      // 2) Move to waiting immediately
+      setState((prev) => ({
+        ...prev,
+        displayName,
+        token,
+        guestId,
+        phase: "waiting",
+        roomId: "",
+        partnerName: "",
+        partnerLeft: false,
+      }));
+
+      // 3) Setup Echo (so user1 can receive updates ASAP)
+      const echo = createEchoInstance(token);
+      echoRef.current = echo;
+
+      // 4) Join queue
+      const q = await joinQueue(token);
+
+      // If backend returns matched immediately (user2 case)
+      if ((q as any).status === "matched") {
+        const roomId =
+          (q as any).room?.public_id ??
+          (q as any).room_public_id ??
+          (q as any).room_id;
+
+        if (!roomId) {
+          // matched but missing room id → treat as error
+          toast.error("Matched but no room id returned.");
+          return;
+        }
+
+        setState((prev) => ({
+          ...prev,
+          roomId,
+          partnerLeft: false,
+          phase: "chatting",
+        }));
+
+        stopHeartbeat();
+      }
+
+      // If waiting, heartbeat effect above will handle advancing to chatting
+    } catch (err) {
+      toast.error(
+        err instanceof Error ? err.message : "Failed to connect. Please try again."
+      );
+      cleanup();
+      setState(initialState);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleCancel = useCallback(() => {
+    cleanup();
+    setState(initialState);
+  }, [cleanup]);
+
+  const handleStop = useCallback(async () => {
+    try {
+      if (state.token && state.roomId) {
+        await leaveRoom(state.token, state.roomId);
+      }
+    } catch {
+      // ignore
+    } finally {
+      cleanup();
+      setState(initialState);
+      toast.info("Chat ended. You can start a new one.");
+    }
+  }, [state.token, state.roomId, cleanup]);
+
+  // ✅ Listen to room events only when CHATTING + have roomId
+  useEffect(() => {
+    if (state.phase !== "chatting") return;
+    if (!echoRef.current) return;
+    if (!state.roomId) return;
+
+    const echo = echoRef.current;
+
+    const channel = echo
+      .private(`room.${state.roomId}`)
+      .listen(".message.sent", (data: any) => {
+        // backend may send flat payload or wrapped
+        const msg: Message = data?.message ?? data;
+
+        if (!msg?.id) return;
+
+        // ignore own messages
+        if (msg.sender_guest_id === Number(state.guestId)) return;
+
+        window.dispatchEvent(new CustomEvent("chat-new-message", { detail: msg }));
+      })
+      .listen(".room.closed", () => {
+        setState((prev) => ({ ...prev, partnerLeft: true, phase: "ended" }));
+        toast.info("Your partner has left the chat.");
+      });
+
+    return () => {
+      channel.stopListening(".message.sent");
+      channel.stopListening(".room.closed");
+    };
+  }, [state.phase, state.roomId, state.guestId]);
+
+  // cleanup on unmount
+  useEffect(() => {
+    return () => cleanup();
+  }, [cleanup]);
+
   return (
-    <div className="flex min-h-screen items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex min-h-screen w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
+    <main className="relative min-h-screen bg-background">
+      {/* <div className="fixed top-4 right-4 z-50">
+        <ThemeToggle />
+      </div> */}
+
+      {state.phase === "name-entry" && (
+        <NameEntry onSubmit={handleNameSubmit} isLoading={isLoading} />
+      )}
+
+      {state.phase === "waiting" && (
+        <WaitingRoom displayName={state.displayName} onCancel={handleCancel} />
+      )}
+
+      {(state.phase === "chatting" || state.phase === "ended") && state.roomId && (
+        <ChatRoom
+          token={state.token}
+          roomId={state.roomId}
+          myGuestId={state.guestId}
+          partnerName={state.partnerName}
+          onStop={handleStop}
+          partnerLeft={state.partnerLeft}
         />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the page.tsx file.
-          </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Learning
-            </a>{" "}
-            center.
-          </p>
-        </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={16}
-            />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Documentation
-          </a>
-        </div>
-      </main>
-    </div>
+      )}
+    </main>
   );
 }

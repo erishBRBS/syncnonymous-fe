@@ -179,7 +179,7 @@ export function ChatRoom({
       {/* Messages */}
       <div
         ref={scrollRef}
-        className="flex flex-1 flex-col gap-3 overflow-y-auto p-4"
+        className="scrollbar-messenger flex flex-1 flex-col gap-3 overflow-y-auto p-4"
       >
         {messages.length === 0 && (
           <div className="flex flex-1 items-center justify-center">

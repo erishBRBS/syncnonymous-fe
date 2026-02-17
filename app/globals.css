@@ -115,6 +115,42 @@
   --color-sidebar-ring: var(--sidebar-ring);
 }
 
+/* Messenger-like scrollbar (Chrome/Edge/Safari) */
+.scrollbar-messenger::-webkit-scrollbar {
+  width: 8px;
+}
+
+.scrollbar-messenger::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.scrollbar-messenger::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.18);
+  border-radius: 999px;
+  border: 2px solid transparent; /* gives spacing like Messenger */
+  background-clip: padding-box;
+}
+
+.scrollbar-messenger:hover::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.28);
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+
+/* Firefox */
+.scrollbar-messenger {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.22) transparent;
+}
+
+/* Optional: hide until hover (works on webkit browsers) */
+.scrollbar-messenger::-webkit-scrollbar-thumb {
+  opacity: 0;
+}
+.scrollbar-messenger:hover::-webkit-scrollbar-thumb {
+  opacity: 1;
+}
+
 @layer base {
   * {
     @apply border-border outline-ring/50;
